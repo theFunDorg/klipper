@@ -34,8 +34,6 @@ class FlatlineKinematics:
         self.arm_lengths = arm_lengths = [sconfig.getfloat('arm_length', arm_length_a, above=0) for sconfig in stepper_configs]
         self.arm2 = [arm**2 for arm in arm_lengths] ## square it now and forever hold your piece. Derp
 
-
-
         # Determine tower locations in cartesian space
         #self.angles = [sconfig.getfloat('angle', angle) for sconfig, angle in zip(stepper_configs, [210., 330., 90.])] self.towers = [(math.cos(math.radians(angle)) * radius, math.sin(math.radians(angle)) * radius) for angle in self.angles]
         # Leaving this in for now but I think this is the maths that is used 
@@ -69,33 +67,126 @@ class FlatlineKinematics:
         # The outsides will never get met as the z axis endstop should prevent that
 
 
+        ## Setting up some boundaries
+        self.min_x = -(rail_parallel_spacing/2-effector_parallel_offset)
+        self.max_x =  (rail_parallel_spacing/2-effector_parallel_offset)
+        self.min_y = -rail_serial_spacing/2
+        self.max_y =  rail_serial_spacing/2
+        ## How to define mathematically the max z value... 
+        ## From one corner to the other corner, accounting for the effector dimensions and all. Will com back to this
+        self.max_z =  (rail_parallel_spacing/2-effector_parallel_offset)
+
+
+##==========================================================================================================================================
+##==========================================================================================================================================
+##==========================================================================================================================================
+
+
         # Setup boundary checks
         self.need_home = True
-        self.limit_xy2 = -1.
+#        self.limit_xy2 = -1.
         self.home_position = tuple( self._actuator_to_cartesian(self.abs_endstops))
-        self.max_z = min([rail.get_homing_info().position_endstop for rail in self.rails])
-        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
-        self.limit_z = min([ep - arm for ep, arm in zip(self.abs_endstops, arm_lengths)])
-        self.min_arm_length = min_arm_length = min(arm_lengths)
-        self.min_arm2 = min_arm_length**2
+#        self.max_z = min([rail.get_homing_info().position_endstop for rail in self.rails])
+#        self.min_z = config.getfloat('minimum_z_position', 0, maxval=self.max_z)
+#        self.limit_z = min([ep - arm for ep, arm in zip(self.abs_endstops, arm_lengths)])
+#        self.min_arm_length = min_arm_length = min(arm_lengths)
+#        self.min_arm2 = min_arm_length**2
         logging.info( "Delta max build height %.2fmm (radius tapered above %.2fmm)" % (self.max_z, self.limit_z))
 
         # Find the point where an XY move could result in excessive
         # tower movement
-        half_min_step_dist = min([r.get_steppers()[0].get_step_dist() for r in self.rails]) * .5
-        min_arm_length = min(arm_lengths)
+ #       half_min_step_dist = min([r.get_steppers()[0].get_step_dist() for r in self.rails]) * .5
+  #      min_arm_length = min(arm_lengths)
         ##     
-        def ratio_to_xy(ratio):
-            return (ratio * math.sqrt(min_arm_length**2 / (ratio**2 + 1.) - half_min_step_dist**2) + half_min_step_dist - radius)
+  #      def ratio_to_xy(ratio):
+   #         return (ratio * math.sqrt(min_arm_length**2 / (ratio**2 + 1.) - half_min_step_dist**2) + half_min_step_dist - radius)
         
-        self.slow_xy2 = ratio_to_xy(SLOW_RATIO)**2
-        self.very_slow_xy2 = ratio_to_xy(2. * SLOW_RATIO)**2
-        self.max_xy2 = min(print_radius, min_arm_length - radius, ratio_to_xy(4. * SLOW_RATIO))**2
-        max_xy = math.sqrt(self.max_xy2)
-        logging.info("Delta max build radius %.2fmm (moves slowed past %.2fmm" " and %.2fmm)" % (max_xy, math.sqrt(self.slow_xy2), math.sqrt(self.very_slow_xy2)))
+    #    self.slow_xy2 = ratio_to_xy(SLOW_RATIO)**2
+     #   self.very_slow_xy2 = ratio_to_xy(2. * SLOW_RATIO)**2
+      #  self.max_xy2 = min(print_radius, min_arm_length - radius, ratio_to_xy(4. * SLOW_RATIO))**2
+       # max_xy = math.sqrt(self.max_xy2)
+
         self.axes_min = toolhead.Coord(-max_xy, -max_xy, self.min_z, 0.)
         self.axes_max = toolhead.Coord(max_xy, max_xy, self.max_z, 0.)
         self.set_position([0., 0., 0.], ())
+
+##==========================================================================================================================================
+## DOESN'T BELONG HERE, MOVE BACK WHEN DONE OR REMOVE ======================================================================================
+##==========================================================================================================================================
+
+        ## Check if axes are homed
+        if self.need_home:
+            raise move.move_error("Must home first")
+        limits = self.limits
+        ## Check if the move end position puts the effector outside acceptable bounds, however we define these...
+        ## We cam define these as...
+        ## max/min X defined by where the printhead square is vertical above the rail, ie... +-(parallel width/2-effector width)
+        self.min_x = -rail_parallel_spacing/2-effector_parallel_offset
+        self.max_x =  rail_parallel_spacing/2-effector_parallel_offset
+        self.min_y = -rail_serial_spacing/2
+        self.max_y =  rail_serial_spacing/2
+        
+        ## max/min Y defined by where the printhead square is vertical above the rail, ie... +-(Serial width/2) 
+        ## Will skip the check on the max speed in xyz, idk for now tbh.
+
+
+        xpos, ypos = move.end_pos[:2]
+        if (xpos < limits[0][0] or xpos > limits[0][1] or ypos < limits[1][0] or ypos > limits[1][1]):
+            self._check_endstops(move)
+        if not move.axes_d[2]:
+            # Normal XY move - use defaults
+            return
+        # Move with Z - update velocity and accel for slower Z axis
+        self._check_endstops(move)
+        z_ratio = move.move_d / abs(move.axes_d[2])
+        move.limit_speed( self.max_z_velocity * z_ratio, self.max_z_accel * z_ratio)
+
+
+
+
+l^2 -z^2 = (rax - x )^2 + ( ray + ga - y )^2 ; 
+l^2 -z^2 = (rbx - x )^2 + ( rby + gb - y )^2 ; 
+l^2 -z^2 = (rcx - x )^2 + ( rcy + gc - y )^2 ; 
+l^2 -z^2 = (rdx - x )^2 + ( rdy + gd - y )^2 ; 
+
+        end_pos = move.end_pos
+        end_xy2 = end_pos[0]**2 + end_pos[1]**2
+        if end_xy2 <= self.limit_xy2 and not move.axes_d[2]:
+            # Normal XY move
+            return
+
+
+        end_z = end_pos[2]
+        limit_xy2 = self.max_xy2
+        ##
+ #       if end_z > self.limit_z:
+ #           above_z_limit = end_z - self.limit_z
+ #           allowed_radius = self.radius - math.sqrt( self.min_arm2 - (self.min_arm_length - above_z_limit)**2 )
+ #           limit_xy2 = min(limit_xy2, allowed_radius**2)
+        ##
+        if end_xy2 > limit_xy2 or end_z > self.max_z or end_z < self.min_z:
+            # Move out of range - verify not a homing move
+            if (end_pos[:2] != self.home_position[:2] or end_z < self.min_z or end_z > self.home_position[2]):
+                raise move.move_error()
+            limit_xy2 = -1.
+        
+        ##
+#        if move.axes_d[2]:
+#            z_ratio = move.move_d / abs(move.axes_d[2])
+#            move.limit_speed(self.max_z_velocity * z_ratio, self.max_z_accel * z_ratio)
+#            limit_xy2 = -1.
+        # Limit the speed/accel of this move if is is at the extreme
+        # end of the build envelope
+ #       extreme_xy2 = max(end_xy2, move.start_pos[0]**2 + move.start_pos[1]**2)
+        ##
+
+
+            limit_xy2 = -1.
+        self.limit_xy2 = min(limit_xy2, self.slow_xy2)
+
+##==========================================================================================================================================
+##==========================================================================================================================================
+##==========================================================================================================================================
 
     ## Seems to be a self referring function but I guess is fine to leave as it is...?
     def get_steppers(self):
@@ -103,8 +194,86 @@ class FlatlineKinematics:
 
     ## Seems to convert the given coordinates and for the givem machine into a set of cartesian coordinates, this will probably (not) be very needed in my one
     def _actuator_to_cartesian(self, spos):
-        sphere_coords = [(t[0], t[1], sp) for t, sp in zip(self.towers, spos)]
-        return mathutil.trilateration(sphere_coords, self.arm2)
+        ## Get offsets for X
+        rax = self.rail_offsets[0][0]
+        rbx = self.rail_offsets[1][0]
+        rcx = self.rail_offsets[2][0]
+        ## Get offsets for Y
+        ray = self.rail_offsets[0][1]
+        rby = self.rail_offsets[1][1]
+        rcy = self.rail_offsets[2][1]
+        ## Get Stepper positions
+        ga = spos[0]
+        gb = spos[1]
+        gc = spos[2]
+        ## Do some calculations here to save spaced
+        alpha = ((rbx)^2 + (rby + gb)^2 - (rax)^2 - (ray + ga)^2 )/(2*( (rbx)-(rax) ))
+        beta  = ((rcx)^2 + (rcy + gc)^2 - (rax)^2 - (ray + ga)^2 )/(2*( (rcx)-(rax) ))
+        theta = ( (ray + ga) - (rby + gb) )/( (rbx) - (rax) )
+        phi   = ( (ray + ga) - (rcy + gc) )/( (rcx) - (rax) )
+        ## Solve for Y
+        y = (alpha-beta)/(phi-theta)
+        ## Solve for X
+        x = alpha + y*theta
+        ## Solve for Z
+        z = sqrt(l^2 - (rax - x )^2 - ( ray + ga - y )^2)
+        return [x,y,z]
+
+
+##==========================================================================================================================================
+##==========================================================================================================================================
+##==========================================================================================================================================
+# 
+# 
+# ## Defining functions, drop the last one and pretend it's all gonna be perfect...?
+# l^2 -z^2 = (rax - x )^2 + ( ray + ga - y )^2 ; 
+# l^2 -z^2 = (rbx - x )^2 + ( rby + gb - y )^2 ; 
+# l^2 -z^2 = (rcx - x )^2 + ( rcy + gc - y )^2 ; 
+# l^2 -z^2 = (rdx - x )^2 + ( rdy + gd - y )^2 ; 
+# 
+# ## Can equate two sides on each of 3 formulae
+# (rax - x )^2 + ( ray + ga - y ) =  (rbx - x )^2 + ( rby + gb - y )^2
+# (rax - x )^2 + ( ray + ga - y ) =  (rcx - x )^2 + ( rcy + gc - y )^2
+# 
+#  ## Got two equations from these
+# (rax - x )^2 - (rbx - x )^2  =   ( rby + gb - y )^2 - ( ray + ga - y )
+# (rax - x )^2 - (rcx - x )^2  =   ( rcy + gc - y )^2 - ( ray + ga - y )
+# 
+# ## For clarity, for now use abcdefgh
+# a=(rax)
+# b=(rbx)
+# c=(rby + gb)
+# d=(ray + ga)
+# ## For second equation
+# e=(rax)
+# f=(rcx)
+# g=(rcy + gc)
+# h=(ray + ga)
+# ## But also as we're reusing one equation...
+# h=d
+# e=a
+# ## Solving for x gives us...
+# x=(b^2 + c^2 - a^2 - d^2 )/(2*( b-a )) + y*( d - c )/( b - a )
+# x=(f^2 + g^2 - a^2 - d^2 )/(2*( f-a )) + y*( d - g )/( f - a )
+# 
+# ## We'll equate these in a sec but for now, simplify again for both equations:
+# alpha = (b^2 + c^2 - a^2 - d^2 )/(2*( b-a ))
+# theta = ( d - c )/( b - a )
+# 
+# beta  = (f^2 + g^2 - a^2 - d^2 )/(2*( f-a ))
+# phi   = ( d - g )/( f - a )
+# 
+# ## Now we can solve for Y
+# y = (alpha-beta)/(phi-theta)
+# ## Then easily for X
+#     x=alpha+ y*theta
+# ## And finally for the annoying one z, which will require the original values, gross
+#     z=...
+# 
+##==========================================================================================================================================
+##==========================================================================================================================================
+##==========================================================================================================================================
+
 
     ## calculate the position of the printhead based on the position of the steppers. Part of the above, not sure why they bothered to make two separate functions though
     def calc_position(self, stepper_positions):
@@ -139,42 +308,17 @@ class FlatlineKinematics:
 
     ## Check if the move that is to be carried out is a valid move
     def check_move(self, move):
-        end_pos = move.end_pos
-        end_xy2 = end_pos[0]**2 + end_pos[1]**2
-        if end_xy2 <= self.limit_xy2 and not move.axes_d[2]:
-            # Normal XY move
-            return
-        if self.need_home:
-            raise move.move_error("Must home first")
-        end_z = end_pos[2]
-        limit_xy2 = self.max_xy2
-        ##
-        if end_z > self.limit_z:
-            above_z_limit = end_z - self.limit_z
-            allowed_radius = self.radius - math.sqrt( self.min_arm2 - (self.min_arm_length - above_z_limit)**2 )
-            limit_xy2 = min(limit_xy2, allowed_radius**2)
-        ##
-        if end_xy2 > limit_xy2 or end_z > self.max_z or end_z < self.min_z:
-            # Move out of range - verify not a homing move
-            if (end_pos[:2] != self.home_position[:2] or end_z < self.min_z or end_z > self.home_position[2]):
-                raise move.move_error()
-            limit_xy2 = -1.
-        ##
-        if move.axes_d[2]:
-            z_ratio = move.move_d / abs(move.axes_d[2])
-            move.limit_speed(self.max_z_velocity * z_ratio, self.max_z_accel * z_ratio)
-            limit_xy2 = -1.
-        # Limit the speed/accel of this move if is is at the extreme
-        # end of the build envelope
-        extreme_xy2 = max(end_xy2, move.start_pos[0]**2 + move.start_pos[1]**2)
-        ##
-        if extreme_xy2 > self.slow_xy2:
-            r = 0.5
-            if extreme_xy2 > self.very_slow_xy2:
-                r = 0.25
-            move.limit_speed(self.max_velocity * r, self.max_accel * r)
-            limit_xy2 = -1.
-        self.limit_xy2 = min(limit_xy2, self.slow_xy2)
+    ## Check if axes are homed
+    ## Check if the move end position puts the effector outside acceptable bounds, however we define these...
+    ## We cam define these as...
+    ## max/min X defined by where the printhead square is vertical above the rail, ie... +-(parallel width/2-effector width)
+    ## max/min Y defined by where the printhead square is vertical above the rail, ie... +-(Serial width/2) 
+    ## Will skip the check on the max speed in xyz, idk for now tbh.
+
+
+
+
+
 
     ## 
     def get_status(self, eventtime):
@@ -184,113 +328,6 @@ class FlatlineKinematics:
             'axis_maximum': self.axes_max,
 ##            'cone_start_z': self.limit_z,
         }
-
-
-
-
-
-# ==================================================================================================================
-# ==================================================================================================================
-# Flatline parameter calibration for DELTA_CALIBRATE tool
-# ==================================================================================================================
-# ==================================================================================================================
-
-
-
-
-
-    ## This should be a part of above but fuck it drop it for now...
-    def get_calibration(self):
-        endstops = [rail.get_homing_info().position_endstop
-                    for rail in self.rails]
-        stepdists = [rail.get_steppers()[0].get_step_dist()
-                     for rail in self.rails]
-        return FlatlineCalibration(self.radius, self.angles, self.arm_lengths,
-                                endstops, stepdists)
-
-class FlatlineCalibration:
-
-    def __init__(self, radius, angles, arms, endstops, stepdists):
-        self.radius = radius
-        self.angles = angles
-        self.arms = arms
-        self.endstops = endstops
-        self.stepdists = stepdists
-        # Calculate the XY cartesian coordinates of the Flatline rails
-        radian_angles = [math.radians(a) for a in angles]
-        self.towers = [(math.cos(a) * radius, math.sin(a) * radius)
-                       for a in radian_angles]
-        # Calculate the absolute Z height of each tower endstop
-        radius2 = radius**2
-        self.abs_endstops = [e + math.sqrt(a**2 - radius2) 
-                             for e, a in zip(endstops, arms)]
-
-    ## 
-    def coordinate_descent_params(self, is_extended):
-        # Determine adjustment parameters (for use with coordinate_descent)
-        adj_params = ('radius', 'angle_a', 'angle_b', 'angle_c',
-                      'endstop_a', 'endstop_b', 'endstop_c', 'endstop_d')
-        if is_extended:
-            adj_params += ('arm_a', 'arm_b', 'arm_c', 'arm_d')
-        params = { 'radius': self.radius }
-        for i, axis in enumerate('abcd'):
-            params['angle_'+axis] = self.angles[i]
-            params['arm_'+axis] = self.arms[i]
-            params['endstop_'+axis] = self.endstops[i]
-            params['stepdist_'+axis] = self.stepdists[i]
-        return adj_params, params
-
-    ## 
-    def new_calibration(self, params):
-        # Create a new calibration object from coordinate_descent params
-        radius = params['radius']
-        angles = [params['angle_'+a] for a in 'abc']
-        arms = [params['arm_'+a] for a in 'abc']
-        endstops = [params['endstop_'+a] for a in 'abc']
-        stepdists = [params['stepdist_'+a] for a in 'abc']
-        return FlatlineCalibration(radius, angles, arms, endstops, stepdists)
-
-    ## 
-    def get_position_from_stable(self, stable_position):
-        # Return cartesian coordinates for the given stable_position
-        sphere_coords = [
-            (t[0], t[1], es - sp * sd)
-            for sd, t, es, sp in zip(self.stepdists, self.towers,
-                                     self.abs_endstops, stable_position) ]
-        return mathutil.trilateration(sphere_coords, [a**2 for a in self.arms])
-
-    ## 
-    def calc_stable_position(self, coord):
-        # Return a stable_position from a cartesian coordinate
-        steppos = [
-            math.sqrt(a**2 - (t[0]-coord[0])**2 - (t[1]-coord[1])**2) + coord[2]
-            for t, a in zip(self.towers, self.arms) ]
-        return [(ep - sp) / sd
-                for sd, ep, sp in zip(self.stepdists,
-                                      self.abs_endstops, steppos)]
-
-    ## 
-    def save_state(self, configfile):
-        # Save the current parameters (for use with SAVE_CONFIG)
-        configfile.set('printer', 'delta_radius', "%.6f" % (self.radius,))
-        for i, axis in enumerate('abcd'):
-            configfile.set('stepper_'+axis, 'angle', "%.6f" % (self.angles[i],))
-            configfile.set('stepper_'+axis, 'arm_length',
-                           "%.6f" % (self.arms[i],))
-            configfile.set('stepper_'+axis, 'position_endstop',
-                           "%.6f" % (self.endstops[i],))
-        gcode = configfile.get_printer().lookup_object("gcode")
-        gcode.respond_info(
-            "stepper_a: position_endstop: %.6f angle: %.6f arm_length: %.6f\n"
-            "stepper_b: position_endstop: %.6f angle: %.6f arm_length: %.6f\n"
-            "stepper_c: position_endstop: %.6f angle: %.6f arm_length: %.6f\n"
-            "stepper_d: position_endstop: %.6f angle: %.6f arm_length: %.6f\n"
-            "delta_radius: %.6f"
-            % (self.endstops[0], self.angles[0], self.arms[0],
-               self.endstops[1], self.angles[1], self.arms[1],
-               self.endstops[2], self.angles[2], self.arms[2],
-               self.endstops[3], self.angles[3], self.arms[3],
-               self.radius))
 
 
 
